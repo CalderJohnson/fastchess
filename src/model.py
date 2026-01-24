@@ -53,7 +53,6 @@ class FastChessNet(nn.Module):
         p = F.relu(self.policy_bn(self.policy_conv(x)))
         p = self.policy_fc(p.view(p.size(0), -1))
         p = p.masked_fill(~legal_mask, -1e9)
-        p = torch.softmax(p, dim=1)
 
         # Value
         v = F.relu(self.value_bn(self.value_conv(x)))

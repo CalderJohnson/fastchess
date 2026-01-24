@@ -1,3 +1,6 @@
 __pycache__
+src/keys.py
 .vscode
 models/*.pt
+data/pretrain/dataset.parquet
+data/*
