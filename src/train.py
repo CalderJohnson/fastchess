@@ -1,5 +1,4 @@
 """Training scheme for FastChessNet using self-play."""
-from matplotlib.pylab import sample
 import torch
 import torch.optim as optim
 

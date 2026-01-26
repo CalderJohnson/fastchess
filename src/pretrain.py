@@ -17,7 +17,7 @@ import gc
 class ChessDataset(Dataset):
     """Dataset of chess positions from historical games."""
     
-    def __init__(self, iterable_dataset=None, min_elo=1800, max_positions_per_game=None, chunk_size=100):
+    def __init__(self, iterable_dataset=None, min_elo=1800, max_positions_per_game=None, chunk_size=1000):
         """
         Args:
             iterable_dataset: HuggingFace IterableDataset (only needed for first preprocessing)
@@ -31,9 +31,9 @@ class ChessDataset(Dataset):
         
         # Check if preprocessed data exists
         if os.path.exists(self.chunk_dir) and len(os.listdir(self.chunk_dir)) > 0:
-            print("Using preprocessed dataset from chunks...")
-            self._build_index()
-            print(f"Dataset contains {len(self)} positions across {len(self.chunk_files)} chunks")
+            print("Loading all chunks into memory...")
+            self.positions = self._load_all_chunks()
+            print(f"Loaded {len(self.positions)} positions into memory")
             return
         
         # Preprocess from scratch
@@ -121,62 +121,44 @@ class ChessDataset(Dataset):
             torch.save(chunk_buffer, chunk_path)
             print(f"\nSaved final chunk {chunk_idx} with {len(chunk_buffer)} positions")
         
-        # Build index after preprocessing
-        self._build_index()
-        print(f"\nTotal: {len(self)} positions from {game_count} games with {skipped_games} skipped games.")
+        # Load all chunks into memory
+        self.positions = self._load_all_chunks()
+        print(f"\nTotal: {len(self.positions)} positions from {game_count} games with {skipped_games} skipped games.")
     
-    def _build_index(self):
-        """Build an index mapping global position indices to (chunk_file, local_index)."""
-        self.chunk_files = sorted([f for f in os.listdir(self.chunk_dir) if f.endswith('.pt')])
-        self.chunk_index = []  # List of (chunk_file, start_idx, end_idx)
+    def _load_all_chunks(self):
+        """Load all chunks into memory at once."""
+        chunk_files = sorted([f for f in os.listdir(self.chunk_dir) if f.endswith('.pt')])
+        all_positions = []
         
-        current_idx = 0
-        for chunk_file in self.chunk_files:
+        for chunk_file in tqdm(chunk_files, desc="Loading chunks"):
             chunk_path = os.path.join(self.chunk_dir, chunk_file)
             chunk_data = torch.load(chunk_path)
-            chunk_size = len(chunk_data)
-            self.chunk_index.append((chunk_file, current_idx, current_idx + chunk_size))
-            current_idx += chunk_size
+            all_positions.extend(chunk_data)
         
-        self.total_positions = current_idx
-        self.current_chunk = None
-        self.current_chunk_file = None
+        return all_positions
     
     def __len__(self):
-        return self.total_positions
+        return len(self.positions)
     
     def __getitem__(self, idx):
-        """Load position from appropriate chunk on-demand."""
-        # Find which chunk contains this index
-        for chunk_file, start_idx, end_idx in self.chunk_index:
-            if start_idx <= idx < end_idx:
-                # Load chunk if not already loaded
-                if self.current_chunk_file != chunk_file:
-                    chunk_path = os.path.join(self.chunk_dir, chunk_file)
-                    self.current_chunk = torch.load(chunk_path)
-                    self.current_chunk_file = chunk_file
-                
-                # Get position from chunk
-                local_idx = idx - start_idx
-                pos = self.current_chunk[local_idx]
-                
-                # Reconstruct board from FEN
-                board = chess.Board(pos['fen'])
-                
-                # Encode board state
-                state = self.encoder.encode_board(board)
-                
-                # Generate legal mask
-                legal_mask = self.move_encoder.get_legal_mask(board)
-                
-                return (
-                    torch.FloatTensor(state),
-                    torch.LongTensor([pos['move_idx']]),
-                    legal_mask,
-                    torch.FloatTensor([pos['value']])
-                )
+        """Generate board state and legal mask on-the-fly from FEN."""
+        pos = self.positions[idx]
         
-        raise IndexError(f"Index {idx} out of range")
+        # Reconstruct board from FEN
+        board = chess.Board(pos['fen'])
+        
+        # Encode board state
+        state = self.encoder.encode_board(board)
+        
+        # Generate legal mask
+        legal_mask = self.move_encoder.get_legal_mask(board)
+        
+        return (
+            torch.FloatTensor(state),
+            torch.LongTensor([pos['move_idx']]),
+            legal_mask,
+            torch.FloatTensor([pos['value']])
+        )
 
 
 def train_epoch(model, dataloader, optimizer, device):

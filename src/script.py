@@ -8,7 +8,7 @@ import hyperparams as hp
 def concatenate_chunks():
     """Load all chunks and save as single file."""
     chunk_dir = hp.PT_DATASET_PATH + "_chunks"
-    output_path = hp.PT_DATASET_PATH
+    output_path = hp.PT_DATASET_PATH + "all_data.pt"
     
     if not os.path.exists(chunk_dir):
         print(f"Chunk directory not found: {chunk_dir}")
@@ -28,7 +28,7 @@ def concatenate_chunks():
     all_positions = []
     total_size_mb = 0
     
-    for chunk_file in tqdm(chunk_files, desc="Loading chunks"):
+    for chunk_file in tqdm(chunk_files[:25], desc="Loading chunks"):
         chunk_path = os.path.join(chunk_dir, chunk_file)
         chunk_data = torch.load(chunk_path)
         all_positions.extend(chunk_data)
@@ -64,15 +64,6 @@ def concatenate_chunks():
     print(f"\n✓ Successfully concatenated {len(chunk_files)} chunks into single file")
     print(f"  Positions: {len(all_positions):,}")
     print(f"  File size: {saved_size_mb:.2f} MB")
-    
-    # Optionally delete chunks
-    response = input("\nDelete chunk files? (y/n): ")
-    if response.lower() == 'y':
-        for chunk_file in chunk_files:
-            chunk_path = os.path.join(chunk_dir, chunk_file)
-            os.remove(chunk_path)
-        os.rmdir(chunk_dir)
-        print("✓ Chunks deleted")
 
 
 if __name__ == "__main__":
