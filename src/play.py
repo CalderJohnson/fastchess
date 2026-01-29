@@ -17,7 +17,6 @@ mcts = MCTS(net, c_puct=hp.CPUCT)
 def play():
     """Main game loop."""
     board = chess.Board()
-    print("Welcome to Neural Chess.")
     print("Enter moves in UCI format (e2e4, g1f3, etc).")
     print("You play White.\n")
 

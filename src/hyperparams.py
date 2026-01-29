@@ -20,13 +20,12 @@ V_FC2_DIM    = 128  # Second fully connected layer dimension for value head
 
 # Pretraining hyperparameters
 MIN_ELO = 2000               # Minimum Elo rating for games used in pretraining
-N_GAMES = 500000             # Number of games to sample for pretraining
+N_GAMES = 100000             # Number of games to sample for pretraining
 MAX_POSITIONS_PER_GAME = 40  # Max positions sampled per game
-CHUNK_SIZE = 10000           # Number of games per saved chunk
 PT_BATCH_SIZE = 256          # Batch size for pretraining
 PT_LR = 1e-3                 # Learning rate for pretraining
 PT_EPOCHS = 10               # Number of pretraining epochs
-PT_SPLIT = 0.95              # Train/validation split ratio for pretraining
+PT_SPLIT = 0.99              # Train/validation split ratio for pretraining
 
 # Self-play training hyperparameters
 BATCH_SIZE = 64        # Samples per training batch

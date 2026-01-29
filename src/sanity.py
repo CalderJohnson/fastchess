@@ -19,13 +19,17 @@ board_encoder = ChessPositionEncoder()
 if hp.USE_SEED:
     torch.manual_seed(hp.SEED)
 
+# ***************
+# BASIC TESTS
+# ***************
+
 def encode(board):
     encoder = ChessPositionEncoder()
-    return torch.tensor(encoder.encode_board(board), dtype=torch.float32).unsqueeze(0).to(DEVICE)
+    return torch.tensor(encoder.encode_board(board), dtype=torch.float32).unsqueeze(0).to(hp.DEVICE)
 
 
 def make_policy_target(move):
-    pi = torch.zeros(8 * 8 * 73, device=DEVICE)
+    pi = torch.zeros(8 * 8 * 73, device=hp.DEVICE)
     encoder = MoveEncoder()
     idx = encoder.encode_move(move)
     pi[idx] = 1.0
@@ -61,8 +65,8 @@ def test_forward_sanity(net):
     mirror = board.mirror()
 
     with torch.no_grad():
-        _, v1 = net(encode(board), torch.tensor(move_encoder.get_legal_mask(board)).unsqueeze(0).to(DEVICE))
-        _, v2 = net(encode(mirror), torch.tensor(move_encoder.get_legal_mask(mirror)).unsqueeze(0).to(DEVICE))
+        _, v1 = net(encode(board), torch.tensor(move_encoder.get_legal_mask(board)).unsqueeze(0).to(hp.DEVICE))
+        _, v2 = net(encode(mirror), torch.tensor(move_encoder.get_legal_mask(mirror)).unsqueeze(0).to(hp.DEVICE))
 
     print("[Forward sanity]")
     print("Value original:", v1.item())
@@ -85,7 +89,7 @@ def test_overfit_single_position(net):
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
 
     for i in range(300):
-        p, v = net(encode(board), torch.tensor(move_encoder.get_legal_mask(board)).unsqueeze(0).to(DEVICE))
+        p, v = net(encode(board), torch.tensor(move_encoder.get_legal_mask(board)).unsqueeze(0).to(hp.DEVICE))
         loss_p = F.cross_entropy(p, pi_target.argmax(dim=1))
         loss_v = F.mse_loss(v, z_target)
         loss = loss_p + loss_v
@@ -98,7 +102,7 @@ def test_overfit_single_position(net):
             print(f"Step {i}, Policy Loss: {loss_p.item():.4f}, Value Loss: {loss_v.item():.4f}")
 
     with torch.no_grad():
-        p, v = net(encode(board), torch.tensor(move_encoder.get_legal_mask(board)).unsqueeze(0).to(DEVICE))
+        p, v = net(encode(board), torch.tensor(move_encoder.get_legal_mask(board)).unsqueeze(0).to(hp.DEVICE))
         prob = F.softmax(p, dim=1)[0, pi_target.argmax()]
 
     print("[Overfit single position]")
@@ -132,7 +136,7 @@ def test_overfit_tiny_game(net):
 
     for i in range(400):
         for b, pi in samples:
-            p, v = net(encode(b), torch.tensor(move_encoder.get_legal_mask(b)).unsqueeze(0).to(DEVICE))
+            p, v = net(encode(b), torch.tensor(move_encoder.get_legal_mask(b)).unsqueeze(0).to(hp.DEVICE))
             loss = F.cross_entropy(p, pi.argmax(dim=1)) + F.mse_loss(v, z)
             opt.zero_grad()
             loss.backward()
@@ -140,27 +144,37 @@ def test_overfit_tiny_game(net):
 
             if i % 100 == 0:
                 with torch.no_grad():
-                    p, v = net(encode(b), torch.tensor(move_encoder.get_legal_mask(b)).unsqueeze(0).to(DEVICE))
+                    p, v = net(encode(b), torch.tensor(move_encoder.get_legal_mask(b)).unsqueeze(0).to(hp.DEVICE))
                     loss_p = F.cross_entropy(p, pi.argmax(dim=1))
                     loss_v = F.mse_loss(v, z)
                     print(f"Step {i}, Policy Loss: {loss_p.item():.4f}, Value Loss: {loss_v.item():.4f}")
 
     print("[Overfit tiny game] (if loss decreased smoothly)")
 
+# ***************
+# PRETRAINING TESTS
+# ***************
+
+
+
+# ***************
+# SELF PLAY TESTS
+# ***************
+
 
 class DummyNet(torch.nn.Module):
     """A dummy network that outputs uniform policy and zero value."""
     def forward(self, x, legal_mask):
         batch = x.size(0)
-        p = torch.ones(batch, 8 * 8 * 73, device=x.device)
-        v = torch.zeros(batch, 1, device=x.device)
+        p = torch.ones(batch, 8 * 8 * 73, device=hp.DEVICE)
+        v = torch.zeros(batch, 1, device=hp.DEVICE)
         return p, v
 
 
 def test_mcts_dummy():
     """Ensure MCTS can still run with a dummy network."""
     board = chess.Board()
-    net = DummyNet().to(DEVICE)
+    net = DummyNet().to(hp.DEVICE)
     mcts = MCTS(net, c_puct=1.25)
 
     pi = mcts.search(board, sims=50)
@@ -242,10 +256,16 @@ if __name__ == "__main__":
 
     # Uncomment to run individual tests
 
-    test_move_encoding()
+    # BASIC TESTS
+    #test_move_encoding()
     # test_forward_sanity(net)
     # test_overfit_single_position(net)
     # test_overfit_tiny_game(net)
+
+    # PRETRAINING TESTS
+    test_pretrain_streaming_dataset()
+
+    # MCTS AND SELF PLAY TESTS
     # test_mcts_dummy()
     # test_mate_in_1(net)
     # test_replay_buffer(net)

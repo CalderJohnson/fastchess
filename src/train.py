@@ -38,6 +38,7 @@ def train(model, replay_buffer):
 def main():
     """Main training loop."""
     model = FastChessNet().to(hp.DEVICE)
+    model.load_state_dict(torch.load(hp.PT_MODEL_PATH, hp.DEVICE))
     model.train()
     buffer = SelfPlayDataset(model)
 
@@ -51,7 +52,7 @@ def main():
             train(model, buffer)
 
         print("Iteration", i, "complete")
-        if i % 10 == 0:
+        if i % 10 == 0: # Save every 10 iterations
             torch.save(model.state_dict(), hp.MODEL_PATH)
 
     torch.save(model.state_dict(), hp.MODEL_PATH)
