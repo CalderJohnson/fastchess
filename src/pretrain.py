@@ -3,12 +3,9 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import IterableDataset, Dataset, DataLoader
-from datasets import load_dataset
+from torch.utils.data import IterableDataset, Dataset
 import chess
 from tqdm import tqdm
-import hyperparams as hp
-from model import FastChessNet
 from util import ChessPositionEncoder, MoveEncoder
 
 
@@ -211,7 +208,7 @@ class ChessStreamDataset(IterableDataset):
             game_count += 1
 
 
-def train_epoch(model, dataloader, optimizer, device, total_batches=None):
+def pretrain_epoch(model, dataloader, optimizer, device, total_batches=None):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -286,92 +283,3 @@ def validate(model, dataloader, device):
             batch_count += 1
     
     return total_loss / batch_count, policy_loss_sum / batch_count, value_loss_sum / batch_count
-
-
-def main():
-    # Load streaming dataset from HuggingFace
-    print("Setting up streaming dataset from HuggingFace...")
-    hf_dataset = load_dataset(
-        "angeluriot/chess_games",
-        split="train",
-        streaming=True
-    )
-    
-    # Calculate validation/training split based on PT_SPLIT
-    # PT_SPLIT is the fraction for training, so (1 - PT_SPLIT) is for validation
-    val_games = int(hp.N_GAMES * (1 - hp.PT_SPLIT))
-    train_games = hp.N_GAMES - val_games
-    
-    print(f"\nDataset split: {train_games} training games, {val_games} validation games")
-    
-    # Create fixed validation set (load into memory)
-    val_dataset = ChessValidationDataset(
-        hf_dataset=hf_dataset,
-        num_games=val_games,
-        min_elo=hp.MIN_ELO,
-        max_positions_per_game=hp.MAX_POSITIONS_PER_GAME
-    )
-    
-    val_dataloader = DataLoader(
-        val_dataset,
-        batch_size=hp.PT_BATCH_SIZE,
-        shuffle=False,
-        num_workers=0
-    )
-    
-    # Estimate batches per epoch
-    positions_per_game = hp.MAX_POSITIONS_PER_GAME if hp.MAX_POSITIONS_PER_GAME else 40
-    estimated_positions = train_games * positions_per_game
-    estimated_batches = estimated_positions // hp.PT_BATCH_SIZE
-    
-    print(f"Estimated ~{estimated_positions:,} training positions ({estimated_batches:,} batches) per epoch")
-    print(f"Validation set: {len(val_dataset):,} positions")
-    
-    # Initialize model
-    model = FastChessNet().to(hp.DEVICE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=hp.PT_LR, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
-    
-    # Training loop
-    print("\nStarting training...")
-    for epoch in range(hp.PT_EPOCHS):
-        print(f"\nEpoch {epoch + 1}/{hp.PT_EPOCHS}")
-        
-        # Recreate streaming dataset for each epoch
-        hf_dataset = load_dataset(
-            "angeluriot/chess_games",
-            split="train",
-            streaming=True
-        )
-        train_dataset = ChessStreamDataset(
-            hf_dataset=hf_dataset,
-            min_elo=hp.MIN_ELO,
-            max_positions_per_game=hp.MAX_POSITIONS_PER_GAME,
-            max_games=train_games,  # Use calculated training games
-            skip_games=val_games  # Skip validation games
-        )
-        train_dataloader = DataLoader(
-            train_dataset,
-            batch_size=hp.PT_BATCH_SIZE,
-            num_workers=0
-        )
-        
-        # Train
-        total_loss, policy_loss, value_loss = train_epoch(
-            model, train_dataloader, optimizer, hp.DEVICE, estimated_batches
-        )
-        scheduler.step()
-        
-        print(f"Train - Loss: {total_loss:.4f}, Policy: {policy_loss:.4f}, Value: {value_loss:.4f}")
-        
-        # Validate every epoch
-        val_loss, val_policy_loss, val_value_loss = validate(model, val_dataloader, hp.DEVICE)
-        print(f"Valid - Loss: {val_loss:.4f}, Policy: {val_policy_loss:.4f}, Value: {val_value_loss:.4f}")
-    
-    # Save final model
-    torch.save(model.state_dict(), hp.PT_MODEL_PATH)
-    print(f"\nTraining complete! Model saved at '{hp.PT_MODEL_PATH}'")
-
-
-if __name__ == "__main__":
-    main()

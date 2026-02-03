@@ -166,7 +166,7 @@ class DummyNet(torch.nn.Module):
     """A dummy network that outputs uniform policy and zero value."""
     def forward(self, x, legal_mask):
         batch = x.size(0)
-        p = torch.ones(batch, 8 * 8 * 73, device=hp.DEVICE)
+        p = torch.ones(batch, hp.POLICY_DIM, device=hp.DEVICE)
         v = torch.zeros(batch, 1, device=hp.DEVICE)
         return p, v
 
@@ -193,14 +193,21 @@ def test_mate_in_1(net):
     board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R6K w - - 0 1")
 
     mcts = MCTS(net, c_puct=1.25)
-    pi = mcts.search(board, sims=100, add_noise=False)
+    pi = mcts.search(board, sims=100)
     for move, visits in pi.items():
-        print(f"Move: {move.uci()}, Visits: {visits}")
+        print(
+            f"Move: {move.uci()}, ",
+            f"Visits: {visits}, ",
+            f"-Q: {-1*mcts.root.children[move].Q:.4f}, ",
+            f"Prior: {mcts.root.children[move].P:.4f}, ",
+            f"UCB: {mcts.c_puct * mcts.root.children[move].P * (mcts.root.N ** 0.5) / (1 + mcts.root.children[move].N):.4f}"
+        )
 
     best = max(pi.items(), key=lambda x: x[1])[0]
+    best = get_best_move(pi, temperature=0.0)
 
     print("[Mate-in-1]")
-    print("Best move:", best)
+    print("Predicted best move:", best)
 
     board.push(best)
     if board.is_checkmate():
@@ -211,7 +218,8 @@ def test_mate_in_1(net):
 
 def test_replay_buffer(net):
     """Play a full game and store positions in the replay buffer, then sample from it."""
-    buffer = SelfPlayDataset()
+    buffer = SelfPlayDataset(net)
+    print(len(buffer))  # Should be 0
     board = chess.Board()
     mcts = MCTS(net, c_puct=hp.CPUCT)
     data = []
@@ -248,10 +256,18 @@ def test_replay_buffer(net):
     print("Sampled policy shape:", sample_policy.shape)
     print("Sampled value shape:", sample_value.shape)
 
+
+def observe_selfplay_game(net):
+    """Play a self-play game and display the board after each move."""
+    dataset = SelfPlayDataset(net)
+    dataset.self_play(display=True)
+
 if __name__ == "__main__":
     # Uncomment to use default vs trained model
 
-    net = FastChessNet().to(DEVICE)
+    net = DummyNet().to(DEVICE)
+    # net = FastChessNet().to(DEVICE)
+    # net.load_state_dict(torch.load(hp.PT_MODEL_PATH, map_location=DEVICE))   
     # net.load_state_dict(torch.load(hp.MODEL_PATH, map_location=DEVICE))   
 
     # Uncomment to run individual tests
@@ -263,9 +279,11 @@ if __name__ == "__main__":
     # test_overfit_tiny_game(net)
 
     # PRETRAINING TESTS
-    test_pretrain_streaming_dataset()
+    # test_pretrain_streaming_dataset()
 
     # MCTS AND SELF PLAY TESTS
     # test_mcts_dummy()
-    # test_mate_in_1(net)
-    # test_replay_buffer(net)
+    test_mate_in_1(net)
+    # test_value_sign_flip()
+    test_replay_buffer(net)
+    # observe_selfplay_game(net)

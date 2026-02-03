@@ -1,11 +1,13 @@
 """Replay buffer to store self-play data"""
+import torch
+import torch.nn.functional as F
 import random
 import chess
 import numpy as np
 from collections import deque
 import hyperparams as hp
 from mcts import MCTS, get_best_move
-from util import MoveEncoder, ChessPositionEncoder
+from util import MoveEncoder, ChessPositionEncoder, print_board
 
 
 class _ReplayBuffer:
@@ -37,6 +39,9 @@ class _ReplayBuffer:
         """Loads the replay buffer from a file."""
         data = np.load(filename, allow_pickle=True)
         self.buffer = deque(data, maxlen=self.capacity)
+
+    def __len__(self):
+        return len(self.buffer)
     
 
 class SelfPlayDataset(_ReplayBuffer):
@@ -47,8 +52,9 @@ class SelfPlayDataset(_ReplayBuffer):
         self.board_encoder = ChessPositionEncoder()
         self.move_encoder = MoveEncoder()
     
-    def self_play(self):
+    def self_play(self, display=False):
         """Plays a single game using MCTS and saves training data."""
+        self.net.eval()
         board = chess.Board()
         mcts = MCTS(self.net, c_puct=hp.CPUCT)
         data = []
@@ -68,7 +74,8 @@ class SelfPlayDataset(_ReplayBuffer):
             temperature = hp.TEMPERATURE if board.fullmove_number < hp.TEMPERATURE_MOVES else 0.0
             move = get_best_move(policy_dict, temperature)
             board.push(move)
-            # print_board(board) #DEBUG
+            if display:
+                print_board(board) #DEBUG
 
         value = 0
         if board.result() == "1-0": value = 1
@@ -76,3 +83,24 @@ class SelfPlayDataset(_ReplayBuffer):
 
         for state, mask, policy in data:
             self.push(state, mask, policy, value)
+
+
+def selfplay_train_iteration(model, replay_buffer, optimizer):
+    """Trains the network using data from the replay buffer."""
+    model.train()
+    for _ in range(hp.TRAINING_STEPS):
+        state, mask, policy, value = replay_buffer.sample()
+        state = torch.tensor(state).to(hp.DEVICE)
+        mask = torch.tensor(mask).to(hp.DEVICE)
+        policy = torch.tensor(policy).to(hp.DEVICE)
+        value = torch.tensor(value).float().to(hp.DEVICE)
+
+        out_p, out_v = model(state, mask)
+
+        loss_v = F.mse_loss(out_v.squeeze(), value)
+        loss_p = F.cross_entropy(out_p, policy.argmax(dim=1))
+        loss = loss_v + loss_p
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()

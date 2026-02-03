@@ -1,7 +1,6 @@
 """Monte Carlo Tree Search implementation for FastChess."""
 import torch
 import torch.nn.functional as F
-import math
 import numpy as np
 from util import MoveEncoder, ChessPositionEncoder
 
@@ -22,11 +21,12 @@ class MCTS:
         self.c_puct = c_puct
         self.move_encoder = MoveEncoder()
         self.board_encoder = ChessPositionEncoder()
+        self.root = None
 
     def _select(self, node):
         best_score = -float('inf')
         best_move, best_child = None, None
-        sqrt_N = math.sqrt(node.N + 1)
+        sqrt_N = node.N ** 0.5
 
         for move, child in node.children.items():
             u = self.c_puct * child.P * sqrt_N / (1 + child.N)
@@ -43,8 +43,7 @@ class MCTS:
         # Encode the board and mask legal moves
         encoded = torch.tensor(self.board_encoder.encode_board(board)).unsqueeze(0).cuda()
         moves = list(board.legal_moves)
-        legal_mask = self.move_encoder.get_legal_mask(board)
-        legal_mask = torch.tensor(legal_mask).unsqueeze(0).cuda()
+        legal_mask = self.move_encoder.get_legal_mask(board).unsqueeze(0).cuda()
 
         # Evaluate with the neural network
         with torch.no_grad():
@@ -68,29 +67,31 @@ class MCTS:
         return value
 
     def _simulate(self, node, board):
-        """Run a single MCTS simulation from the root and backpropagate the value."""
-        node.N += 1
+        """Perform a single MCTS simulation from the given node."""
+        # Terminal node, value is known
         if board.is_game_over() or board.is_repetition(3) or board.can_claim_fifty_moves():
             if board.is_checkmate():
-                value = -1
+                value = -1.0
             else:
-                value = 0
-
-            node.W += value
-            node.Q = node.W / node.N
-            return value
-
-        if not node.expanded:
+                value = 0.0
+        
+        # Leaf node, expand and evaluate
+        elif not node.expanded:
             value = self._expand(node, board)
+            node.N += 1
             node.W += value
             node.Q = node.W / node.N
             return value
-
-        move, child = self._select(node)
-        board.push(move)
-        value = -self._simulate(child, board)
-        board.pop()
-
+        
+        # Internal node, select and recurse
+        else:
+            move, child = self._select(node)
+            board.push(move)
+            value = -self._simulate(child, board)
+            board.pop()
+        
+        # Increment after recursion
+        node.N += 1
         node.W += value
         node.Q = node.W / node.N
         return value
@@ -107,13 +108,13 @@ class MCTS:
 
     def search(self, board, sims, add_noise=True):
         """Perform MCTS simulations starting from the given board state."""
-        root = Node(0.0)
-        self._expand(root, board)
+        self.root = Node(0.0)
+        self._expand(self.root, board)
         if add_noise:
-            self._add_dirichlet_noise(root)
+            self._add_dirichlet_noise(self.root)
         for _ in range(sims):
-            self._simulate(root, board.copy())
-        return {m: c.N for m, c in root.children.items()}
+            self._simulate(self.root, board.copy())
+        return {m: c.N for m, c in self.root.children.items()}
 
 
 def get_best_move(choices, temperature):
