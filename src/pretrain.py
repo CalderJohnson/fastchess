@@ -1,5 +1,4 @@
-
-"""Pretraining pipeline for FastChessNet using historical chess games."""
+"""Pretraining pipeline for FastChessNet using historical chess games and puzzles."""
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -7,6 +6,100 @@ from torch.utils.data import IterableDataset, Dataset
 import chess
 from tqdm import tqdm
 from util import ChessPositionEncoder, MoveEncoder
+
+
+class ChessPuzzleDataset(Dataset):
+    """Dataset of chess puzzles for tactical training."""
+    
+    def __init__(self, hf_dataset, num_puzzles, skip_puzzles=0, min_rating=1500):
+        """
+        Args:
+            hf_dataset: HuggingFace puzzle dataset
+            num_puzzles: Number of puzzles to load
+            min_rating: Minimum puzzle rating to include
+            skip_puzzles: Number of puzzles to skip (for validation split)
+        """
+        self.encoder = ChessPositionEncoder()
+        self.move_encoder = MoveEncoder()
+        self.positions = []
+        
+        print(f"Loading {num_puzzles} chess puzzles...")
+        puzzle_count = 0
+        
+        for puzzle in tqdm(hf_dataset.skip(skip_puzzles), desc="Loading puzzles", total=num_puzzles):
+            if puzzle_count >= num_puzzles:
+                break
+            
+            # Filter by rating
+            if puzzle['Rating'] < min_rating:
+                continue
+            
+            # Parse puzzle
+            try:
+                board = chess.Board(puzzle['FEN'])
+                moves = puzzle['Moves'].split()
+                
+                # Process each move in the solution
+                # Puzzles show the best continuation, so each move is "correct"
+                for i in range(0, len(moves), 2):  # Only use player's moves (every other move)
+                    if i >= len(moves):
+                        break
+                    
+                    move_uci = moves[i]
+                    move = chess.Move.from_uci(move_uci)
+                    
+                    if move not in board.legal_moves:
+                        break
+                    
+                    # For puzzles, assume the solution leads to winning
+                    # Value = +1 for side to move (they're solving the puzzle)
+                    value = 1.0
+                    
+                    move_idx = self.move_encoder.encode_move(move)
+                    
+                    self.positions.append({
+                        'fen': board.fen(),
+                        'move_idx': move_idx,
+                        'value': value
+                    })
+                    
+                    # Make the move and opponent's response
+                    board.push(move)
+                    if i + 1 < len(moves):
+                        opponent_move = chess.Move.from_uci(moves[i + 1])
+                        if opponent_move in board.legal_moves:
+                            board.push(opponent_move)
+                        else:
+                            break
+                
+                puzzle_count += 1
+                
+            except Exception as e:
+                continue
+        
+        print(f"Loaded {len(self.positions)} tactical positions from {puzzle_count} puzzles")
+    
+    def __len__(self):
+        return len(self.positions)
+    
+    def __getitem__(self, idx):
+        pos = self.positions[idx]
+        
+        # Reconstruct board from FEN
+        board = chess.Board(pos['fen'])
+        
+        # Encode board state
+        state = self.encoder.encode_board(board)
+        
+        # Generate legal mask
+        legal_mask = self.move_encoder.get_legal_mask(board)
+        
+        return (
+            torch.FloatTensor(state),
+            torch.LongTensor([pos['move_idx']]),
+            legal_mask,
+            torch.FloatTensor([pos['value']])
+        )
 
 
 class ChessValidationDataset(Dataset):
@@ -208,6 +301,97 @@ class ChessStreamDataset(IterableDataset):
             game_count += 1
 
 
+class MixedDataLoader:
+    """DataLoader that yields mixed batches from positional game data and tactical puzzle data."""
+    
+    def __init__(self, positional_dataset, puzzle_dataset, batch_size, tactical_ratio=0.2):
+        """
+        Args:
+            positional_dataset: Dataset for game positions (streaming or fixed)
+            puzzle_dataset: Fixed puzzle dataset
+            batch_size: Total batch size
+            tactical_ratio: Fraction of batch from puzzles (0.2 = 20%)
+        """
+        self.positional_dataset = positional_dataset
+        self.puzzle_dataset = puzzle_dataset
+        self.batch_size = batch_size
+        self.tactical_size = int(batch_size * tactical_ratio)
+        self.positional_size = batch_size - self.tactical_size
+        self.positional_iter = None
+        
+        # Check if positional_dataset is a fixed Dataset (has __getitem__) or streaming
+        self.is_fixed_positional = hasattr(positional_dataset, '__getitem__') and hasattr(positional_dataset, '__len__')
+        
+        # For fixed datasets, track position in shuffled indices
+        self.positional_indices = None
+        self.positional_index = 0
+    
+    def __iter__(self):
+        """Yield mixed batches."""
+        if self.is_fixed_positional:
+            # Shuffle indices once at the start
+            self.positional_indices = np.random.permutation(len(self.positional_dataset))
+            self.positional_index = 0
+        else:
+            self.positional_iter = iter(self.positional_dataset)
+        return self
+    
+    def __next__(self):
+        """Get next mixed batch."""
+        # Accumulate positional data
+        states_list = []
+        moves_list = []
+        masks_list = []
+        values_list = []
+        
+        # Get positional data (either from stream or fixed dataset)
+        if self.is_fixed_positional:
+            # Iterate through shuffled indices without replacement
+            for _ in range(self.positional_size):
+                if self.positional_index >= len(self.positional_indices):
+                    raise StopIteration
+                
+                idx = self.positional_indices[self.positional_index]
+                self.positional_index += 1
+                
+                state, move, mask, value = self.positional_dataset[idx]
+                states_list.append(state)
+                moves_list.append(move)
+                masks_list.append(mask)
+                values_list.append(value)
+        else:
+            # Get from streaming dataset
+            for _ in range(self.positional_size):
+                try:
+                    state, move, mask, value = next(self.positional_iter)
+                    states_list.append(state)
+                    moves_list.append(move)
+                    masks_list.append(mask)
+                    values_list.append(value)
+                except StopIteration:
+                    raise StopIteration
+        
+        # Sample tactical data from puzzles
+        if len(self.puzzle_dataset) > 0:
+            puzzle_indices = np.random.choice(len(self.puzzle_dataset), 
+                                            self.tactical_size, replace=True)
+            
+            for idx in puzzle_indices:
+                state, move, mask, value = self.puzzle_dataset[idx]
+                states_list.append(state)
+                moves_list.append(move)
+                masks_list.append(mask)
+                values_list.append(value)
+        
+        # Stack into batch tensors
+        return (
+            torch.stack(states_list),
+            torch.stack(moves_list),
+            torch.stack(masks_list),
+            torch.stack(values_list)
+        )
+
+
 def pretrain_epoch(model, dataloader, optimizer, device, total_batches=None):
     """Train for one epoch."""
     model.train()
@@ -256,7 +440,7 @@ def pretrain_epoch(model, dataloader, optimizer, device, total_batches=None):
     return total_loss / batch_count, policy_loss_sum / batch_count, value_loss_sum / batch_count
 
 
-def validate(model, dataloader, device):
+def validate(model, dataloader, device, total_batches=None):
     """Run validation."""
     model.eval()
     total_loss = 0
@@ -265,7 +449,7 @@ def validate(model, dataloader, device):
     batch_count = 0
     
     with torch.no_grad():
-        for states, target_moves, legal_masks, target_values in tqdm(dataloader, desc="Validating"):
+        for states, target_moves, legal_masks, target_values in tqdm(dataloader, desc="Validating", total=total_batches):
             states = states.to(device)
             target_moves = target_moves.to(device).squeeze(1)
             legal_masks = legal_masks.to(device)

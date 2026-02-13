@@ -1,5 +1,6 @@
 """Global configs"""
 import torch
+import math
 
 # Misc
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -21,6 +22,9 @@ V_FC2_DIM    = 128  # Second fully connected layer dimension for value head
 MIN_ELO = 2000               # Minimum Elo rating for games used in pretraining
 N_GAMES = 100000             # Number of games to sample for pretraining
 MAX_POSITIONS_PER_GAME = 40  # Max positions sampled per game
+N_PUZZLES = 100000           # Number of puzzles to load
+MIN_PUZZLE_RATING = 1000     # Minimum puzzle difficulty
+TACTICAL_RATIO = 0.1         # 10% of each batch from puzzles
 PT_BATCH_SIZE = 256          # Batch size for pretraining
 PT_LR = 1e-3                 # Learning rate for pretraining
 PT_EPOCHS = 10               # Number of pretraining epochs
@@ -39,4 +43,4 @@ TEMPERATURE = 1.0      # Temperature for move selection
 # MCTS hyperparameters
 SIMULATIONS_TRAIN = 400 # Number of MCTS rollouts per move during training
 SIMULATIONS_INF = 400   # Number of MCTS rollouts per move during inference
-CPUCT = 1.25            # Exploration constant
+CPUCT = math.sqrt(2)    # Exploration constant
