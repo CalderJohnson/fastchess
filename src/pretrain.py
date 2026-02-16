@@ -392,7 +392,7 @@ class MixedDataLoader:
         )
 
 
-def pretrain_epoch(model, dataloader, optimizer, device, total_batches=None):
+def pretrain_epoch(model, dataloader, optimizer, scheduler, device, total_batches=None):
     """Train for one epoch."""
     model.train()
     total_loss = 0
@@ -424,6 +424,7 @@ def pretrain_epoch(model, dataloader, optimizer, device, total_batches=None):
         # Backward pass
         loss.backward()
         optimizer.step()
+        scheduler.step()
         
         # Track metrics
         total_loss += loss.item()

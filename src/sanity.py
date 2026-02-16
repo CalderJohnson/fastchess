@@ -193,7 +193,7 @@ def test_mate_in_1(net):
     board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R6K w - - 0 1")
 
     mcts = MCTS(net, c_puct=1.25)
-    pi = mcts.search(board, sims=100)
+    pi = mcts.search(board, sims=400)
     for move, visits in pi.items():
         print(
             f"Move: {move.uci()}, ",
@@ -265,16 +265,17 @@ def observe_selfplay_game(net):
 if __name__ == "__main__":
     # Uncomment to use default vs trained model
 
-    net = DummyNet().to(DEVICE)
-    # net = FastChessNet().to(DEVICE)
+    # net = DummyNet().to(DEVICE)
+    net = FastChessNet().to(DEVICE)
     # net.load_state_dict(torch.load(hp.PT_MODEL_PATH, map_location=DEVICE))   
+    net.load_state_dict(torch.load("../models/checkpoint_3.pt", map_location=DEVICE))   
     # net.load_state_dict(torch.load(hp.MODEL_PATH, map_location=DEVICE))   
 
     # Uncomment to run individual tests
 
     # BASIC TESTS
-    #test_move_encoding()
-    # test_forward_sanity(net)
+    # test_move_encoding()
+    test_forward_sanity(net)
     # test_overfit_single_position(net)
     # test_overfit_tiny_game(net)
 
@@ -284,6 +285,5 @@ if __name__ == "__main__":
     # MCTS AND SELF PLAY TESTS
     # test_mcts_dummy()
     test_mate_in_1(net)
-    # test_value_sign_flip()
-    test_replay_buffer(net)
-    # observe_selfplay_game(net)
+    # test_replay_buffer(net)
+    observe_selfplay_game(net)

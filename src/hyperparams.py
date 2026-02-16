@@ -31,11 +31,11 @@ PT_EPOCHS = 10               # Number of pretraining epochs
 PT_SPLIT = 0.99              # Train/validation split ratio for pretraining
 
 # Self-play training hyperparameters
-BATCH_SIZE = 128        # Samples per training batch
+BATCH_SIZE = 128       # Samples per training batch
 TRAINING_STEPS = 500   # Number of training steps (over replay buffer) per iteration
 ITERATIONS = 4         # Total training iterations (self-play followed by training) per epoch
 REPLAY_SIZE = 5000     # Size of the replay buffer (number of position, move, outcome tuples)
-LR = 1e-4              # Initial learning rate
+LR = 1e-3              # Initial learning rate
 GAMES_PER_ITER = 8     # Self-play games per training iteration
 TEMPERATURE_MOVES = 10 # Number of moves with exploration in self-play
 TEMPERATURE = 1.0      # Temperature for move selection
