@@ -45,6 +45,35 @@ class ChessPositionEncoder:
         state[17, :, :] = 1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0
         
         return state
+    
+    @staticmethod
+    def decode_board(state):
+        """Decode 18x8x8 tensor back to chess.Board."""
+        board = chess.Board.empty()
+        
+        # Decode pieces
+        for channel in range(12):
+            piece_type = (channel % 6) + 1
+            color = chess.WHITE if channel < 6 else chess.BLACK
+            for rank in range(8):
+                for file in range(8):
+                    if state[channel, rank, file] == 1.0:
+                        square = chess.square(file, rank)
+                        board.set_piece_at(square, chess.Piece(piece_type, color))
+        
+        # Decode metadata
+        if state[13, 0, 0] == 0.0:
+            board.turn = chess.BLACK
+        if state[14, 0, 0] == 1.0:
+            board.castling_rights |= chess.BB_H1
+        if state[15, 0, 0] == 1.0:
+            board.castling_rights |= chess.BB_A1
+        if state[16, 0, 0] == 1.0:
+            board.castling_rights |= chess.BB_H8
+        if state[17, 0, 0] == 1.0:
+            board.castling_rights |= chess.BB_A8
+        
+        return board
 
 
 class MoveEncoder:

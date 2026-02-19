@@ -2,7 +2,6 @@
 import torch
 from huggingface_hub import login
 from datasets import load_dataset
-from torch.utils.data import DataLoader
 
 import hyperparams as hp
 from keys import HF_TOKEN
@@ -29,18 +28,14 @@ def main():
         streaming=True
     )
     
-    # Calculate validation/training split based on PT_SPLIT
-    val_games = int(hp.N_GAMES * (1 - hp.PT_SPLIT))
-    train_games = hp.N_GAMES - val_games
-    
-    print(f"\nPositional dataset split: {train_games} training games, {val_games} validation games")
+    print(f"\nPositional dataset: {hp.TRAIN_POSITIONAL_POSITIONS:,} training positions, {hp.VAL_POSITIONAL_POSITIONS:,} validation positions")
+    print(f"Puzzle dataset: {hp.TRAIN_PUZZLE_POSITIONS:,} training positions, {hp.VAL_PUZZLE_POSITIONS:,} validation positions")
     
     # Create fixed positional validation set (load into memory)
     val_positional_dataset = ChessValidationDataset(
         hf_dataset=val_positional_dataset_hf,
-        num_games=val_games,
-        min_elo=hp.MIN_ELO,
-        max_positions_per_game=hp.MAX_POSITIONS_PER_GAME
+        num_positions=hp.VAL_POSITIONAL_POSITIONS,
+        min_elo=hp.MIN_ELO
     )
 
     # Load puzzle dataset from HuggingFace
@@ -50,16 +45,11 @@ def main():
         streaming=True
     )
     
-    val_puzzles = int(hp.N_PUZZLES * (1 - hp.PT_SPLIT))
-    train_puzzles = hp.N_PUZZLES - val_puzzles
-
-    print(f"Puzzle split: {train_puzzles} training puzzles, {val_puzzles} validation puzzles")
-    
-    # Training puzzles
+    # Training puzzles (skip validation positions)
     train_puzzle_dataset = ChessPuzzleDataset(
         hf_dataset=puzzle_dataset_hf_train,
-        num_puzzles=train_puzzles,
-        skip_puzzles=val_puzzles,
+        num_positions=hp.TRAIN_PUZZLE_POSITIONS,
+        skip_positions=hp.VAL_PUZZLE_POSITIONS,
         min_rating=hp.MIN_PUZZLE_RATING
     )
     
@@ -72,14 +62,11 @@ def main():
     
     val_puzzle_dataset = ChessPuzzleDataset(
         hf_dataset=puzzle_dataset_hf_val,
-        num_puzzles=val_puzzles,
-        skip_puzzles=0,
+        num_positions=hp.VAL_PUZZLE_POSITIONS,
+        skip_positions=0,
         min_rating=hp.MIN_PUZZLE_RATING
     )
     
-    # Estimate batches per epoch
-    estimated_positions = train_games * hp.MAX_POSITIONS_PER_GAME
-    estimated_batches = (estimated_positions * (1 / (1 - hp.TACTICAL_RATIO))) // hp.PT_BATCH_SIZE
     
     # Create mixed validation dataloader
     val_dataloader = MixedDataLoader(
@@ -90,18 +77,17 @@ def main():
     )
     
     # Calculate validation batches
-    val_positions = len(val_positional_dataset)
-    val_batches = (val_positions / (1 / (1 - hp.TACTICAL_RATIO))) // hp.PT_BATCH_SIZE
+    val_batches = (hp.VAL_POSITIONAL_POSITIONS + hp.VAL_PUZZLE_POSITIONS) // hp.PT_BATCH_SIZE
     
-    print(f"\nTraining set: ~{estimated_positions:,} positional + {len(train_puzzle_dataset):,} tactical in {estimated_batches:,} batches per epoch")
-    print(f"Validation set: {val_positions:,} positional + {len(val_puzzle_dataset):,} tactical in {val_batches:,} batches")
+    print(f"\nTraining set: {hp.TRAIN_POSITIONAL_POSITIONS:,} positional + {len(train_puzzle_dataset):,} tactical positions in {hp.PT_STEPS:,} batches per epoch")
+    print(f"Validation set: {len(val_positional_dataset):,} positional + {len(val_puzzle_dataset):,} tactical positions in {val_batches:,} batches")
     print(f"Batch composition: {int((1-hp.TACTICAL_RATIO)*100)}% games, {int(hp.TACTICAL_RATIO*100)}% puzzles")
     
     # Initialize model
     model = FastChessNet().to(hp.DEVICE)
 
     # Configure pretraining optimizer and scheduler
-    total_steps = hp.PT_EPOCHS * estimated_batches
+    total_steps = hp.PT_EPOCHS * hp.PT_STEPS
     warmup_steps = int(0.05 * total_steps)
 
     optimizer_pt = torch.optim.AdamW(
@@ -145,9 +131,8 @@ def main():
         train_dataset = ChessStreamDataset(
             hf_dataset=positional_dataset,
             min_elo=hp.MIN_ELO,
-            max_positions_per_game=hp.MAX_POSITIONS_PER_GAME,
-            max_games=train_games,
-            skip_games=val_games
+            max_positions=hp.TRAIN_POSITIONAL_POSITIONS,
+            skip_positions=hp.VAL_POSITIONAL_POSITIONS
         )
         
         # Create mixed dataloader
@@ -160,7 +145,7 @@ def main():
         
         # Train with mixed data
         total_loss, policy_loss, value_loss = pretrain_epoch(
-            model, mixed_dataloader, optimizer_pt, scheduler, hp.DEVICE, estimated_batches
+            model, mixed_dataloader, optimizer_pt, scheduler, hp.DEVICE, hp.PT_STEPS
         )
         
         print(f"Train - Loss: {total_loss:.4f}, Policy: {policy_loss:.4f}, Value: {value_loss:.4f}")

@@ -8,7 +8,7 @@ from util import print_board, parse_move
 
 # Load model
 net = FastChessNet().to(hp.DEVICE)
-net.load_state_dict(torch.load("../models/checkpoint_3.pt", map_location=hp.DEVICE))
+net.load_state_dict(torch.load(hp.PT_MODEL_PATH, map_location=hp.DEVICE))
 net.eval()
 
 # Initialize MCTS

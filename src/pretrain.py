@@ -11,23 +11,25 @@ from util import ChessPositionEncoder, MoveEncoder
 class ChessPuzzleDataset(Dataset):
     """Dataset of chess puzzles for tactical training."""
     
-    def __init__(self, hf_dataset, num_puzzles, skip_puzzles=0, min_rating=1500):
+    def __init__(self, hf_dataset, num_positions, skip_positions=0, min_rating=1500):
         """
         Args:
             hf_dataset: HuggingFace puzzle dataset
-            num_puzzles: Number of puzzles to load
+            num_positions: Number of positions to load from puzzles
             min_rating: Minimum puzzle rating to include
-            skip_puzzles: Number of puzzles to skip (for validation split)
+            skip_positions: Number of positions to skip (for validation split)
         """
         self.encoder = ChessPositionEncoder()
         self.move_encoder = MoveEncoder()
         self.positions = []
         
-        print(f"Loading {num_puzzles} chess puzzles...")
+        print(f"Loading {num_positions} positions from chess puzzles...")
         puzzle_count = 0
+        skipped_positions = 0
         
-        for puzzle in tqdm(hf_dataset.skip(skip_puzzles), desc="Loading puzzles", total=num_puzzles):
-            if puzzle_count >= num_puzzles:
+        for puzzle in tqdm(hf_dataset, desc="Loading puzzle positions", total=num_positions):
+            # Stop if we have enough positions
+            if len(self.positions) >= num_positions:
                 break
             
             # Filter by rating
@@ -57,11 +59,21 @@ class ChessPuzzleDataset(Dataset):
                     
                     move_idx = self.move_encoder.encode_move(move)
                     
-                    self.positions.append({
+                    position = {
                         'fen': board.fen(),
                         'move_idx': move_idx,
                         'value': value
-                    })
+                    }
+                    
+                    # Handle skipping for validation split
+                    if skipped_positions < skip_positions:
+                        skipped_positions += 1
+                    else:
+                        self.positions.append(position)
+                        
+                        # Stop if we have enough positions
+                        if len(self.positions) >= num_positions:
+                            break
                     
                     # Make the move and opponent's response
                     board.push(move)
@@ -105,23 +117,24 @@ class ChessPuzzleDataset(Dataset):
 class ChessValidationDataset(Dataset):
     """Fixed validation dataset loaded into memory."""
     
-    def __init__(self, hf_dataset, num_games, min_elo=1800, max_positions_per_game=None):
+    def __init__(self, hf_dataset, num_positions, min_elo=1800, sample_positions_per_game=None):
         """
         Args:
             hf_dataset: HuggingFace IterableDataset
-            num_games: Number of games to load for validation
+            num_positions: Number of positions to load from games
             min_elo: Minimum average ELO to include game
-            max_positions_per_game: Limit positions per game (None = all)
+            sample_positions_per_game: If set, sample this many positions per game (None = all)
         """
         self.encoder = ChessPositionEncoder()
         self.move_encoder = MoveEncoder()
         self.positions = []
         
-        print(f"Loading {num_games} games for validation set...")
+        print(f"Loading {num_positions} positions from games for validation set...")
         game_count = 0
         
-        for game in tqdm(hf_dataset, desc="Loading validation games", total=num_games):
-            if game_count >= num_games:
+        for game in tqdm(hf_dataset, desc="Loading validation positions", total=num_positions):
+            # Stop if we have enough positions
+            if len(self.positions) >= num_positions:
                 break
             
             # Filter by ELO
@@ -165,11 +178,13 @@ class ChessValidationDataset(Dataset):
                     break
             
             # Sample positions if requested
-            if max_positions_per_game and len(game_positions) > max_positions_per_game:
-                indices = np.random.choice(len(game_positions), max_positions_per_game, replace=False)
+            if sample_positions_per_game and len(game_positions) > sample_positions_per_game:
+                indices = np.random.choice(len(game_positions), sample_positions_per_game, replace=False)
                 game_positions = [game_positions[i] for i in sorted(indices)]
             
-            self.positions.extend(game_positions)
+            # Add positions up to our limit
+            positions_to_add = min(len(game_positions), num_positions - len(self.positions))
+            self.positions.extend(game_positions[:positions_to_add])
             game_count += 1
         
         print(f"Loaded {len(self.positions)} validation positions from {game_count} games")
@@ -200,44 +215,33 @@ class ChessValidationDataset(Dataset):
 class ChessStreamDataset(IterableDataset):
     """Streaming dataset that processes chess games on-the-fly from HuggingFace for training."""
     
-    def __init__(self, hf_dataset, min_elo=1800, max_positions_per_game=None, 
-                 max_games=None, skip_games=0):
+    def __init__(self, hf_dataset, min_elo=1800, sample_positions_per_game=None, 
+                 max_positions=None, skip_positions=0):
         """
         Args:
             hf_dataset: HuggingFace IterableDataset
             min_elo: Minimum average ELO to include game
-            max_positions_per_game: Limit positions per game (None = all)
-            max_games: Maximum number of games to process (None = all)
-            skip_games: Number of games to skip at start (for train/val split)
+            sample_positions_per_game: If set, sample this many positions per game (None = all)
+            max_positions: Maximum number of positions to yield (None = all)
+            skip_positions: Number of positions to skip at start (for train/val split)
         """
         super().__init__()
         self.hf_dataset = hf_dataset
         self.min_elo = min_elo
-        self.max_positions_per_game = max_positions_per_game
-        self.max_games = max_games
-        self.skip_games = skip_games
+        self.sample_positions_per_game = sample_positions_per_game
+        self.max_positions = max_positions
+        self.skip_positions = skip_positions
         self.encoder = ChessPositionEncoder()
         self.move_encoder = MoveEncoder()
     
     def __iter__(self):
         """Yield positions one at a time from the streaming dataset."""
-        game_count = 0
+        position_count = 0
         skipped_count = 0
         
         for game in self.hf_dataset:
-            # Skip games for validation split
-            if skipped_count < self.skip_games:
-                # Still need to check ELO to skip the right games
-                try:
-                    avg_elo = (game['white_elo'] + game['black_elo']) / 2
-                    if avg_elo >= self.min_elo:
-                        skipped_count += 1
-                except:
-                    pass
-                continue
-            
-            # Stop if max games reached
-            if self.max_games and game_count >= self.max_games:
+            # Stop if max positions reached
+            if self.max_positions and position_count >= self.max_positions:
                 break
             
             # Filter by ELO
@@ -285,20 +289,29 @@ class ChessStreamDataset(IterableDataset):
                     break
             
             # Sample positions if requested
-            if self.max_positions_per_game and len(game_positions) > self.max_positions_per_game:
-                indices = np.random.choice(len(game_positions), self.max_positions_per_game, replace=False)
+            if self.sample_positions_per_game and len(game_positions) > self.sample_positions_per_game:
+                indices = np.random.choice(len(game_positions), self.sample_positions_per_game, replace=False)
                 game_positions = [game_positions[i] for i in sorted(indices)]
             
-            # Yield all positions from this game
+            # Yield positions from this game
             for pos in game_positions:
+                # Handle skipping for validation split
+                if skipped_count < self.skip_positions:
+                    skipped_count += 1
+                    continue
+                
+                # Stop if max positions reached
+                if self.max_positions and position_count >= self.max_positions:
+                    break
+                
                 yield (
                     torch.FloatTensor(pos['state']),
                     torch.LongTensor([pos['move_idx']]),
                     pos['legal_mask'],
                     torch.FloatTensor([pos['value']])
                 )
-            
-            game_count += 1
+                
+                position_count += 1
 
 
 class MixedDataLoader:

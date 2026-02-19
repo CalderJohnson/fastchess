@@ -4,9 +4,13 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from copy import deepcopy
+from datasets import load_dataset
+
+from tqdm import tqdm
 
 import hyperparams as hp
 from model import FastChessNet
+from pretrain import ChessValidationDataset, ChessStreamDataset, ChessPuzzleDataset, MixedDataLoader
 from mcts import MCTS, get_best_move
 from selfplay import SelfPlayDataset
 from util import MoveEncoder, ChessPositionEncoder, print_board
@@ -42,6 +46,7 @@ def test_move_encoding():
 
     board = chess.Board()
     for move in board.legal_moves:
+        print("Legal mask shape:", move_encoder.get_legal_mask(board).shape)
         all_moves.append(move)
 
     print("[Move Encoding Test]")
@@ -58,6 +63,16 @@ def test_move_encoding():
     else:
         print("Some moves failed encoding/decoding test.")
 
+def test_board_encoding():
+    """Test that board encoding produces the expected shape and values."""
+    board = chess.Board()
+    print("Board before encoding: ")
+    print_board(board)
+    encoded = board_encoder.encode_board(board)
+    board = board_encoder.decode_board(encoded)
+    print("Board after encoding and decoding: ")
+    print_board(board)
+    
 
 def test_forward_sanity(net):
     """Test that the network's value output changes sign when the board is mirrored (only relevant after training)."""
@@ -155,6 +170,124 @@ def test_overfit_tiny_game(net):
 # PRETRAINING TESTS
 # ***************
 
+def examine_pt_dataset(net, test_shapes=True, examine_moves=True, test_batching=True):
+    """Examine the pretraining datasets and dataloaders to ensure they are loading and batching data correctly."""
+    # Temporary hyperparameters for dataset sizes (these would be set in hyperparams.py in a real run)
+    PT_STEPS = 10
+    PT_BATCH_SIZE = 256
+    TACTICAL_RATIO = 0.1
+    test_train_positional_positions =  (PT_BATCH_SIZE - int(PT_BATCH_SIZE * TACTICAL_RATIO)) * PT_STEPS
+    test_val_positional_positions = int(0.01 * test_train_positional_positions)
+    test_train_puzzle_positions = int(PT_BATCH_SIZE * TACTICAL_RATIO) * PT_STEPS
+    test_val_puzzle_positions = int(0.01 * test_train_puzzle_positions)
+
+    # Load validation positional data dataset from HuggingFace (training data is streamed in pretrain_epoch)
+    val_positional_dataset_hf = load_dataset(
+        "angeluriot/chess_games",
+        split="train",
+        streaming=True
+    )
+    
+    print(f"\nPositional dataset: {test_train_positional_positions:,} training positions, {test_val_positional_positions:,} validation positions")
+    print(f"Puzzle dataset: {test_train_puzzle_positions:,} training positions, {test_val_puzzle_positions:,} validation positions")
+    
+    # Create fixed positional validation set (load into memory)
+    val_positional_dataset = ChessValidationDataset(
+        hf_dataset=val_positional_dataset_hf,
+        num_positions=test_val_positional_positions,
+        min_elo=hp.MIN_ELO
+    )
+
+    # Load puzzle dataset from HuggingFace
+    puzzle_dataset_hf_train = load_dataset(
+        "Lichess/chess-puzzles",
+        split="train",
+        streaming=True
+    )
+    
+    # Training puzzles (skip validation positions)
+    train_puzzle_dataset = ChessPuzzleDataset(
+        hf_dataset=puzzle_dataset_hf_train,
+        num_positions=test_train_puzzle_positions,
+        skip_positions=test_val_puzzle_positions,
+        min_rating=hp.MIN_PUZZLE_RATING
+    )
+    
+    # Validation puzzles
+    puzzle_dataset_hf_val = load_dataset(
+        "Lichess/chess-puzzles",
+        split="train",
+        streaming=True
+    )
+    
+    val_puzzle_dataset = ChessPuzzleDataset(
+        hf_dataset=puzzle_dataset_hf_val,
+        num_positions=test_val_puzzle_positions,
+        skip_positions=0,
+        min_rating=hp.MIN_PUZZLE_RATING
+    )
+    
+    # Calculate batches per epoch based on positional data (puzzles are sampled in each batch)
+    estimated_batches = int(test_train_positional_positions / (hp.PT_BATCH_SIZE * (1 - hp.TACTICAL_RATIO)))
+    
+    # Create mixed validation dataloader
+    val_dataloader = MixedDataLoader(
+        positional_dataset=val_positional_dataset,
+        puzzle_dataset=val_puzzle_dataset,
+        batch_size=hp.PT_BATCH_SIZE,
+        tactical_ratio=hp.TACTICAL_RATIO
+    )
+    
+    # Calculate validation batches
+    val_batches = int(len(val_positional_dataset) / (hp.PT_BATCH_SIZE * (1 - hp.TACTICAL_RATIO)))
+    
+    print(f"\nTraining set: {test_train_positional_positions:,} positional + {len(train_puzzle_dataset):,} tactical positions in ~{estimated_batches:,} batches per epoch")
+    print(f"Validation set: {len(val_positional_dataset):,} positional + {len(val_puzzle_dataset):,} tactical positions in {val_batches:,} batches")
+    print(f"Batch composition: {int((1-hp.TACTICAL_RATIO)*100)}% games, {int(hp.TACTICAL_RATIO*100)}% puzzles")
+
+    # Create streaming dataset like I would each epoch
+    positional_dataset = load_dataset(
+        "angeluriot/chess_games",
+        split="train",
+        streaming=True
+    )
+    train_dataset = ChessStreamDataset(
+        hf_dataset=positional_dataset,
+        min_elo=hp.MIN_ELO,
+        max_positions=test_train_positional_positions,
+        skip_positions=test_val_positional_positions
+    )
+    
+    # Create mixed dataloader
+    mixed_dataloader = MixedDataLoader(
+        positional_dataset=train_dataset,
+        puzzle_dataset=train_puzzle_dataset,
+        batch_size=hp.PT_BATCH_SIZE,
+        tactical_ratio=hp.TACTICAL_RATIO
+    )
+
+    pbar = tqdm(mixed_dataloader, total=estimated_batches)
+    for i, (states, target_moves, legal_masks, target_values) in enumerate(pbar):
+        if i >= 3 and not test_batching: 
+            break
+        states = states.to(DEVICE)
+        target_moves = target_moves.to(DEVICE).squeeze(1)
+        legal_masks = legal_masks.to(DEVICE)
+        target_values = target_values.to(DEVICE).squeeze(1)
+        policy_logits, value_pred = net(states, legal_masks)
+        print(f"\nBatch {i+1}")
+        if test_shapes:
+            print("State shape:", states.shape)
+            print("Mask shape:", legal_masks.shape)
+            print("Policy shape:", target_moves.shape)
+            print("Value shape:", target_values.shape)
+            print("Policy logits shape:", policy_logits.shape)
+            print("Value pred shape:", value_pred.shape)
+
+        if examine_moves:
+            print_board(board_encoder.decode_board(states[0].cpu().numpy()))
+            print("Ground truth move:", move_encoder.decode_move(target_moves[0].item()))
+            print("Ground truth value:", target_values[0].item())
 
 
 # ***************
@@ -268,22 +401,23 @@ if __name__ == "__main__":
     # net = DummyNet().to(DEVICE)
     net = FastChessNet().to(DEVICE)
     # net.load_state_dict(torch.load(hp.PT_MODEL_PATH, map_location=DEVICE))   
-    net.load_state_dict(torch.load("../models/checkpoint_3.pt", map_location=DEVICE))   
+    # net.load_state_dict(torch.load("../models/checkpoint_3.pt", map_location=DEVICE))   
     # net.load_state_dict(torch.load(hp.MODEL_PATH, map_location=DEVICE))   
 
     # Uncomment to run individual tests
 
     # BASIC TESTS
     # test_move_encoding()
-    test_forward_sanity(net)
+    # test_board_encoding()
+    # test_forward_sanity(net)
     # test_overfit_single_position(net)
     # test_overfit_tiny_game(net)
 
     # PRETRAINING TESTS
-    # test_pretrain_streaming_dataset()
+    examine_pt_dataset(net, False, False)
 
     # MCTS AND SELF PLAY TESTS
     # test_mcts_dummy()
-    test_mate_in_1(net)
+    # test_mate_in_1(net)
     # test_replay_buffer(net)
-    observe_selfplay_game(net)
+    # observe_selfplay_game(net)

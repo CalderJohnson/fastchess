@@ -19,16 +19,18 @@ V_FC1_DIM    = 192  # First fully connected layer dimension for value head
 V_FC2_DIM    = 128  # Second fully connected layer dimension for value head
 
 # Pretraining hyperparameters
-MIN_ELO = 2000               # Minimum Elo rating for games used in pretraining
-N_GAMES = 100000             # Number of games to sample for pretraining
-MAX_POSITIONS_PER_GAME = 40  # Max positions sampled per game
-N_PUZZLES = 100000           # Number of puzzles to load
-MIN_PUZZLE_RATING = 1000     # Minimum puzzle difficulty
-TACTICAL_RATIO = 0.1         # 10% of each batch from puzzles
-PT_BATCH_SIZE = 256          # Batch size for pretraining
-PT_LR = 1e-3                 # Learning rate for pretraining
-PT_EPOCHS = 10               # Number of pretraining epochs
-PT_SPLIT = 0.99              # Train/validation split ratio for pretraining
+PT_BATCH_SIZE = 256                   # Batch size for pretraining
+TACTICAL_RATIO = 0.1                  # 10% of each batch from puzzles
+PT_STEPS = 10000                      # Pretraining steps per epoch
+PT_SPLIT = 0.01                       # 1% of data for validation
+TRAIN_POSITIONAL_POSITIONS = (PT_BATCH_SIZE - int(PT_BATCH_SIZE * TACTICAL_RATIO)) * PT_STEPS
+VAL_POSITIONAL_POSITIONS = int(PT_SPLIT * TRAIN_POSITIONAL_POSITIONS)
+TRAIN_PUZZLE_POSITIONS = int(PT_BATCH_SIZE * TACTICAL_RATIO) * PT_STEPS
+VAL_PUZZLE_POSITIONS = int(PT_SPLIT * TRAIN_PUZZLE_POSITIONS)
+MIN_ELO = 2000                        # Minimum Elo rating for games used in pretraining
+MIN_PUZZLE_RATING = 1000              # Minimum puzzle difficulty
+PT_LR = 1e-3                          # Learning rate for pretraining
+PT_EPOCHS = 10                        # Number of pretraining epochs
 
 # Self-play training hyperparameters
 BATCH_SIZE = 128       # Samples per training batch
